@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/gorilla/mux"
+	m "github.com/go-kratos/kratos/v2/transport/http/mux"
 
 	"github.com/go-kratos/kratos/v2/internal/endpoint"
 	"github.com/go-kratos/kratos/v2/internal/host"
@@ -137,7 +137,8 @@ func Listener(lis net.Listener) ServerOption {
 // PathPrefix with mux's PathPrefix, router will replaced by a subrouter that start with prefix.
 func PathPrefix(prefix string) ServerOption {
 	return func(s *Server) {
-		s.router = s.router.PathPrefix(prefix).Subrouter()
+		//s.router = s.router.PathPrefix(prefix).Subrouter()
+		s.prefix = prefix
 	}
 }
 
@@ -159,7 +160,8 @@ type Server struct {
 	enc         EncodeResponseFunc
 	ene         EncodeErrorFunc
 	strictSlash bool
-	router      *mux.Router
+	muxer       m.Muxer
+	prefix      string
 }
 
 // NewServer creates an HTTP server by options.
@@ -169,23 +171,27 @@ func NewServer(opts ...ServerOption) *Server {
 		address:     ":0",
 		timeout:     1 * time.Second,
 		middleware:  matcher.New(),
-		decVars:     DefaultRequestVars,
 		decQuery:    DefaultRequestQuery,
 		decBody:     DefaultRequestDecoder,
 		enc:         DefaultResponseEncoder,
 		ene:         DefaultErrorEncoder,
 		strictSlash: true,
-		router:      mux.NewRouter(),
+		// router:      mux.NewRouter(),
+		muxer: m.NewMuxer(),
 	}
 	for _, o := range opts {
 		o(srv)
 	}
-	srv.router.StrictSlash(srv.strictSlash)
-	srv.router.NotFoundHandler = http.DefaultServeMux
-	srv.router.MethodNotAllowedHandler = http.DefaultServeMux
-	srv.router.Use(srv.filter())
+	srv.muxer.WithOptions(&m.Options{
+		NotFoundHandler:         http.DefaultServeMux,
+		MethodNotAllowedHandler: http.DefaultServeMux,
+		StrictSlash:             srv.strictSlash,
+		Prefix:                  srv.prefix,
+	})
+	srv.decVars = NewRequestVarsDecodeFunc(srv.muxer)
+	srv.muxer.Use(srv.filter())
 	srv.Server = &http.Server{
-		Handler:   FilterChain(srv.filters...)(srv.router),
+		Handler:   FilterChain(srv.filters...)(srv.muxer.GetHandler()),
 		TLSConfig: srv.tlsConf,
 	}
 	return srv
@@ -202,21 +208,8 @@ func (s *Server) Use(selector string, m ...middleware.Middleware) {
 
 // WalkRoute walks the router and all its sub-routers, calling walkFn for each route in the tree.
 func (s *Server) WalkRoute(fn WalkRouteFunc) error {
-	return s.router.Walk(func(route *mux.Route, router *mux.Router, ancestors []*mux.Route) error {
-		methods, err := route.GetMethods()
-		if err != nil {
-			return nil // ignore no methods
-		}
-		path, err := route.GetPathTemplate()
-		if err != nil {
-			return err
-		}
-		for _, method := range methods {
-			if err := fn(RouteInfo{Method: method, Path: path}); err != nil {
-				return err
-			}
-		}
-		return nil
+	return s.muxer.WalkRoute(func(path, method string) error {
+		return fn(RouteInfo{Path: path, Method: method})
 	})
 }
 
@@ -235,22 +228,22 @@ func (s *Server) Route(prefix string, filters ...FilterFunc) *Router {
 
 // Handle registers a new route with a matcher for the URL path.
 func (s *Server) Handle(path string, h http.Handler) {
-	s.router.Handle(path, h)
+	s.muxer.Handle(path, h)
 }
 
 // HandlePrefix registers a new route with a matcher for the URL path prefix.
 func (s *Server) HandlePrefix(prefix string, h http.Handler) {
-	s.router.PathPrefix(prefix).Handler(h)
+	s.muxer.HandlePrefix(prefix, h)
 }
 
 // HandleFunc registers a new route with a matcher for the URL path.
 func (s *Server) HandleFunc(path string, h http.HandlerFunc) {
-	s.router.HandleFunc(path, h)
+	s.muxer.HandleFunc(path, h)
 }
 
 // HandleHeader registers a new route with a matcher for the header.
 func (s *Server) HandleHeader(key, val string, h http.HandlerFunc) {
-	s.router.Headers(key, val).Handler(h)
+	s.muxer.HandleHeader(key, val, h)
 }
 
 // ServeHTTP should write reply headers and data to the ResponseWriter and then return.
@@ -258,7 +251,7 @@ func (s *Server) ServeHTTP(res http.ResponseWriter, req *http.Request) {
 	s.Handler.ServeHTTP(res, req)
 }
 
-func (s *Server) filter() mux.MiddlewareFunc {
+func (s *Server) filter() m.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			var (
@@ -272,11 +265,7 @@ func (s *Server) filter() mux.MiddlewareFunc {
 			}
 			defer cancel()
 
-			pathTemplate := req.URL.Path
-			if route := mux.CurrentRoute(req); route != nil {
-				// /path/123 -> /path/{id}
-				pathTemplate, _ = route.GetPathTemplate()
-			}
+			pathTemplate := s.muxer.GetPathTemplate(req)
 
 			tr := &Transport{
 				operation:    pathTemplate,

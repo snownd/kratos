@@ -59,7 +59,7 @@ func (r *Router) Handle(method, relativePath string, h HandlerFunc, filters ...F
 	}))
 	next = FilterChain(filters...)(next)
 	next = FilterChain(r.filters...)(next)
-	r.srv.router.Handle(path.Join(r.prefix, relativePath), next).Methods(method)
+	r.srv.muxer.VerboseHandle(method, path.Join(r.prefix, relativePath), next)
 }
 
 // GET registers a new GET route for a path with matching handler in the router.

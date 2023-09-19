@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/gorilla/mux"
+	m "github.com/go-kratos/kratos/v2/transport/http/mux"
 
 	"github.com/go-kratos/kratos/v2/encoding"
 	"github.com/go-kratos/kratos/v2/errors"
@@ -43,13 +43,24 @@ type EncodeResponseFunc func(http.ResponseWriter, *http.Request, interface{}) er
 type EncodeErrorFunc func(http.ResponseWriter, *http.Request, error)
 
 // DefaultRequestVars decodes the request vars to object.
-func DefaultRequestVars(r *http.Request, v interface{}) error {
-	raws := mux.Vars(r)
-	vars := make(url.Values, len(raws))
-	for k, v := range raws {
-		vars[k] = []string{v}
+// func DefaultRequestVars(r *http.Request, v interface{}) error {
+// 	raws := mux.Vars(r)
+// 	vars := make(url.Values, len(raws))
+// 	for k, v := range raws {
+// 		vars[k] = []string{v}
+// 	}
+// 	return binding.BindQuery(vars, v)
+// }
+
+func NewRequestVarsDecodeFunc(muxer m.Muxer) DecodeRequestFunc {
+	return func(r *http.Request, v interface{}) error {
+		raws := muxer.Vars(r)
+		vars := make(url.Values, len(raws))
+		for k, v := range raws {
+			vars[k] = []string{v}
+		}
+		return binding.BindQuery(vars, v)
 	}
-	return binding.BindQuery(vars, v)
 }
 
 // DefaultRequestQuery decodes the request vars to object.
